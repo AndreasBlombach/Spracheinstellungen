@@ -1,0 +1,1659 @@
+---
+title: "Studie zu gendergerechten Personenbezeichnungen"
+author: "Andreas Blombach"
+date: last-modified
+date-format: long
+format:
+  html:
+    self-contained: true
+    toc: true
+    toc-depth: 3
+    code-fold: false
+    code-tools: true
+    theme: yeti
+    df-print: paged
+    fig-width: 8
+    fig-height: 5
+    link-external-icon: true
+---
+
+## Setup
+
+Pakete laden:
+```{r, message=FALSE}
+library(tidyverse)
+library(easystats)
+library(psych)
+library(skimr)
+library(lavaan)
+library(ggcorrplot)
+library(broom)
+library(paletteer)
+library(patchwork)
+library(GGally)
+library(stargazer)
+library(lme4)
+library(glmmTMB)
+library(betareg)
+library(emmeans)
+```
+
+Datei einlesen:
+```{r, message=FALSE}
+ds <- read_tsv("soscipanel_cleaned.csv")
+```
+
+```{r}
+ds
+```
+
+
+## Ausschluss von Daten
+Alle raus, die nicht mind. 10 Minuten gebraucht haben, außerdem alle, die nicht
+über eine halbe Minute mit dem Text verbracht haben (die realistische Zeit zum
+bloßen Überfliegen liegt eher bei mind. einer Minute):
+```{r}
+ds <- ds |> filter(TIME_SUM >= 600 & TIME005 > 30)
+ds
+```
+
+
+Filterfragen -- was sind die Problemfälle?
+```{r}
+ds <- ds |> mutate(Filterfragen_korrekt = ifelse(SE01_26 < 45 | SE01_26 > 55, 0, 1) + ifelse(SE01_32 < 95, 0, 1) + ifelse(GE01_21 < 95, 0, 1) + ifelse(GE01_22 > 5, 0, 1))
+
+ds |>
+  filter(Filterfragen_korrekt < 3) |>
+  select(ID, Filterfragen_korrekt, SE01_26, SE01_32, GE01_21, GE01_22, FB_Ergaenzungen1, FB_Ergaenzungen2, SE_Ergaenzungen, GE_Ergaenzungen, GGS_Ergaenzungen, Feedback)
+```
+
+Nach manueller Prüfung der potentiell problematischen Fälle:
+```{r}
+ds <- ds |>
+  filter((Filterfragen_korrekt >= 2 | ID %in% c(1226, 1288, 1476)), ID != 934)
+```
+
+
+## Bereinigung
+
+Bildung:
+```{r}
+ds |>
+  select(ID, SD11_10, Land) |>
+  na.omit()
+```
+
+Zuordnung der freien Angaben zu unseren Kategorien:
+```{r}
+ds[ds$ID == 917,]$Bildung <- "Hochschulabschluss (inkl. Fachhochschule)"
+ds[ds$ID == 937,]$Bildung <- "Hochschulabschluss (inkl. Fachhochschule)"
+ds[ds$ID == 950,]$Bildung <- "Abgeschlossene Lehre"
+ds[ds$ID == 974,]$Bildung <- "Hochschulabschluss (inkl. Fachhochschule)"
+ds[ds$ID == 1099,]$Bildung <- "Abgeschlossene Lehre"
+ds[ds$ID == 1148,]$Bildung <- "Abgeschlossene Lehre"
+ds[ds$ID == 1150,]$Bildung <- "Abgeschlossene Lehre"
+ds[ds$ID == 1167,]$Bildung <- "Abgeschlossene Lehre"
+ds[ds$ID == 1200,]$Bildung <- "Promotion"
+ds[ds$ID == 1220,]$Bildung <- "Hochschulabschluss (inkl. Fachhochschule)"
+ds[ds$ID == 1261,]$Bildung <- "Abgeschlossene Lehre"
+ds[ds$ID == 1280,]$Bildung <- "Abitur, Hochschulreife"
+ds[ds$ID == 1352,]$Bildung <- "Abgeschlossene Lehre"
+ds[ds$ID == 1430,]$Bildung <- "Hochschulabschluss (inkl. Fachhochschule)"
+ds[ds$ID == 1439,]$Bildung <- "Mittlere Reife, Realschul- oder gleichwertiger Abschluss"
+```
+
+
+Weitere Variablen zu Faktoren machen:
+```{r}
+ds <- ds |>
+  mutate(Geschlecht = factor(Geschlecht, levels = c("männlich", "weiblich", "anderes")),
+         Land = factor(Land),
+         Bildung = factor(Bildung),
+         Bundesland = factor(Bundesland),
+         Stadtland = factor(Stadtland),
+         Muttersprache_Deutsch = factor(Muttersprache_Deutsch),
+         Deutschkenntnisse = factor(Deutschkenntnisse))
+```
+
+Variable `Zufallstext` zu einem Faktor machen (statt Zahlen 1-5):
+```{r}
+ds$Zufallstext <- factor(ds$Zufallstext,
+                         labels = c("GenMask", "GenMaskEx", "Neutral", "Sternchen", "Doppelpunkt"))
+```
+
+Männer- und Frauenschätzungen in einer gemeinsamen Variable `Frauenschätzung`
+zusammenführen (bei Variable `I_Frauenschaetzung` überall dort, wo Werte fehlen,
+wo also Probanden den Männeranteil schätzen sollten, Werte
+ergänzen (`100 - I_Maennerschaetzung`)):
+```{r}
+ds <- ds |> mutate(Frauenschätzung = ifelse(is.na(I_Frauenschaetzung), 100 - I_Maennerschaetzung, I_Frauenschaetzung))
+```
+
+Angabe, was jeweils geschätzt werden sollte:
+```{r}
+ds <- ds |> mutate(Männer_Frauen = ifelse(is.na(I_Frauenschaetzung), "Männer", "Frauen"))
+```
+
+## Stichprobenübersicht
+```{r}
+ds |>
+  select(Geschlecht, Alter, Land, Bildung, Bundesland, Stadtland, Muttersprache_Deutsch) |>
+  skim()
+```
+
+```{r}
+ds |>
+  select(Geschlecht, Alter, Land, Bildung, Bundesland, Stadtland, Muttersprache_Deutsch) |>
+  report()
+```
+
+### Soziodemographische Daten
+Überwiegend weibliche Probanden (61,6 %: 229 F, 139 M, 4 D):
+```{r}
+ds |>
+  ggplot(aes(x = Geschlecht)) +
+  geom_bar()
+```
+
+Altersverteilung:
+```{r}
+altersverteilung <- ds |>
+  ggplot(aes(x = Alter)) +
+  geom_histogram(binwidth = 5, center = 2.5) +
+  labs(y = "Häufigkeit")
+altersverteilung
+
+#ggsave("figures/altersverteilung.svg", altersverteilung, width = 6, height = 4)
+```
+M=52,2
+SD=14,3
+Spanne: 21 bis 85
+```{r}
+ds |>
+  select(Geschlecht, Alter) |>
+  group_by(Geschlecht) |>
+  skim()
+```
+
+
+Mögliche Datenverzerrung durch Überrepräsentation hochgebildeter
+Probanden:
+```{r}
+bildungsverteilung <- ds |>
+  ggplot(aes(x = Bildung)) +
+  labs(y = "Häufigkeit") +
+  geom_bar() +
+  theme(axis.text.x = element_text(angle = -45, hjust = 0))
+bildungsverteilung
+```
+
+
+```{r}
+#| fig-height: 8
+alter_bildung <- altersverteilung + bildungsverteilung + plot_layout(nrow = 2)
+alter_bildung
+# ggsave("figures/alter_bildung.svg", alter_bildung, width = 4, height = 6)
+```
+
+Stadt/Land:
+```{r}
+ds$Stadtland |>
+  fct_count(sort = TRUE) |>
+  mutate(rel = n / sum(n))
+```
+
+
+```{r}
+ds |> select(Land, Bundesland, Stadtland,
+              Muttersprache_Deutsch, Deutschkenntnisse) |>
+  skim()
+```
+
+## Reliabilität der Skalen
+### Einstellung zur Gleichstellung
+Legende:
+
+- GE01_01 = Die Gleichstellung von Männern und Frauen ist ein Grundrecht.
+- GE01_02 = Für die Schaffung einer faireren Gesellschaft ist es notwendig, Ungleichheiten zwischen Männern und Frauen einzuebnen.
+- GE01_03 = Die Gleichstellung von Männern und Frauen ist mir persönlich wichtig.
+- GE01_04 = Auch Männer sollten für die Rechte von Frauen eintreten.
+- GE01_05 = Von Männern wird beim Kampf um die Gleichstellung zu viel erwartet.
+- GE01_06 = Gleichstellung von Männern und Frauen wird nicht gegen, sondern zusammen mit Männern erreicht.
+- GE01_09 = Gleichstellungspolitik ist nur ein anderer Name für Frauenförderung.
+- GE01_12 = Die Gleichstellungspolitik schießt inzwischen über das Ziel der bloßen Gleichstellung von Männern und Frauen hinaus.
+- GE01_13 = Gleichstellung von Männern und Frauen hat Vorteile für beide.
+- GE01_14 = In Deutschland ist es von Vorteil, ein Mann zu sein.
+- GE01_15 = Ich identifiziere mich mit den Zielen des Feminismus.
+- GE01_16 = Für Frauen wurde schon genug getan, jetzt sind die Männer dran.
+- GE01_17 = Ich interessiere mich sehr für das Thema Gleichstellung.
+- GE01_18 = Ich finde es gut, wenn Menschen heute nicht mehr traditionellen Rollenbildern und Geschlechterstereotypen genügen müssen.
+- GE01_19 = Ich befürworte Frauenquoten für Führungspositionen.
+- GE01_20 = Die Frauenbewegung hat stark dazu beigetragen, dass es heute in Deutschland gerechter zugeht als früher.
+
+```{r}
+ds |>
+  select(starts_with("GE01"), -GE01_21, -GE01_22) |> # GE01_21 und GE01_22 sind Aufmerksamkeitstests
+  mutate(GE01_05 = 100 - GE01_05, GE01_09 = 100 - GE01_09, GE01_12 = 100 - GE01_12, GE01_16 = 100 - GE01_16) |>
+  report_table()
+```
+
+```{r}
+alpha_ge <- ds |>
+  select(starts_with("GE01"), -GE01_21, -GE01_22) |> # GE01_21 und GE01_22 sind Aufmerksamkeitstests
+  mutate(GE01_05 = 100 - GE01_05, GE01_09 = 100 - GE01_09, GE01_12 = 100 - GE01_12, GE01_16 = 100 - GE01_16) |>
+  alpha()
+alpha_ge
+```
+
+`GE01_06` hat etwas geringe Trennschärfe (corrected item-total correlations,
+Spalte `r.drop` -- die Korrelation des Items mit der Skala, wenn das Item nicht
+enthalten wäre), sonst sieht es gut aus.
+
+```{r}
+omega_ge <- ds |>
+  select(starts_with("GE01"), -GE01_21, -GE01_22) |> # GE01_21 und GE01_22 sind Aufmerksamkeitstests
+  mutate(GE01_05 = 100 - GE01_05, GE01_09 = 100 - GE01_09, GE01_12 = 100 - GE01_12, GE01_16 = 100 - GE01_16) |>
+  omega()
+omega_ge
+```
+
+
+### Einstellung zur geschlechtergerechten Sprache
+Legende:
+
+- GE02_01 = Geschlechtergerechte Sprache ist ein wichtiger Beitrag zu stärkerer Gleichberechtigung.
+- GE02_02 = Wer für die Gleichstellung aller Geschlechter ist, muss auch für geschlechtergerechte Sprache sein.
+- GE02_03 = Es gibt viel dringender zu lösende Probleme als die Frage, ob sich Frauen und Minderheiten in Texten angemessen repräsentiert fühlen.
+- GE02_04 = Niemanden sprachlich auszuschließen oder zu benachteiligen, sollte eigentlich eine Selbstverständlichkeit sein.
+- GE02_05 = Es ist ein Armutszeugnis, dass wir Jahrzehnte nach Beginn der Frauenbewegung noch immer keine geschlechtergerechte Sprache haben.
+- GE02_06 = Dass wir über „Probleme“ wie geschlechtergerechte Sprache überhaupt nachdenken, zeigt, dass wir keine echten Probleme mehr haben.
+- GE02_07 = Ich nutze selbst geschlechtergerechte Sprache.
+
+```{r}
+ds |>
+  select(starts_with("GE02")) |>
+  mutate(GE02_03 = 100 - GE02_03, GE02_06 = 100 - GE02_06) |>
+  report_table()
+```
+
+
+```{r}
+alpha_ggs <- ds |>
+  select(starts_with("GE02")) |>
+  mutate(GE02_03 = 100 - GE02_03, GE02_06 = 100 - GE02_06) |>
+  alpha()
+alpha_ggs
+```
+
+```{r}
+omega_ggs <- ds |>
+  select(starts_with("GE02")) |>
+  mutate(GE02_03 = 100 - GE02_03, GE02_06 = 100 - GE02_06) |>
+  omega(fm = "ml")
+omega_ggs
+```
+
+
+### Spracheinstellungen
+Legende:
+
+- SE01_01 = Sprachpessimismus 01: Das Sprachniveau in Zeitungen, Zeitschriften und sonstigen Druckerzeugnissen sinkt seit Jahren immer weiter.
+- SE01_02 = Sprachpessimismus 02: Vor 50 Jahren beherrschten die Leute das Deutsche besser als heute.
+- SE01_03 = Sprachpessimismus 03: In den Schulen wird heute zu wenig Wert auf Rechtschreibung und Grammatik gelegt.
+- SE01_13 = Sprachpessimismus 04: Durch den zunehmenden Einfluss des Englischen geht es mit dem Deutschen bergab.
+- SE01_25 = Sprachpessimismus 05: Die neue Sprache der Jugend ist furchtbar.
+- SE01_28 = Sprachpessimismus 06: Die derzeitige Entwicklung der deutschen Sprache finde ich erfreulich.
+
+- SE01_04 = Gegen Eingriffe 01: Staatliche Eingriffe in den allgemeinen Sprachgebrauch (wie z.B. Rechtschreibreformen) lehne ich ab.
+- SE01_05 = Gegen Eingriffe 02: Die Rechtschreibreformen von 1996–2006 waren ein Debakel.
+- SE01_06 = Gegen Eingriffe 03: Das Deutsche sollte sich nicht unbeaufsichtigt weiterentwickeln: Eine zentrale Autorität muss ab und an Ordnung ins Regelwerk bringen.
+- SE01_07 = Gegen Eingriffe 04: Sprache sollte sich ausschließlich natürlich entwickeln, nicht durch reglementierende Eingriffe gezielt verändert werden.
+- SE01_09 = Gegen Eingriffe 05: Ich fände es gut, wenn Rechtschreibung und Grammatik des Deutschen systematisch vereinfacht würden.
+- SE01_31 = Gegen Eingriffe 06: Wenn der Staat in die Sprache eingreift, sorgt das nur für Chaos und Verwirrung.
+
+- SE01_08 = Gegen politisch motivierte Eingriffe 01: Die Politik soll dafür sorgen, dass jede Minderheit so bezeichnet wird, wie sie sich das wünscht.
+- SE01_10 = Gegen politisch motivierte Eingriffe 02: Die Instrumentalisierung von Sprache für weltanschauliche Zielvorstellungen verurteile ich.
+- SE01_11 = Gegen politisch motivierte Eingriffe 03: Ich lehne es ab, die Sprache zu verändern, um politische Ziele bestimmter Gruppen zu erreichen.
+- SE01_12 = Gegen politisch motivierte Eingriffe 04: Altbewährte Regeln sollte man nicht einfach über den Haufen werfen, bloß um politisch in der Mode zu sein.
+- SE01_20 = Gegen politisch motivierte Eingriffe 05: In einer freien, rechtsstaatlichen Demokratie sollte mir nicht vorgeschrieben werden, wie ich mich auszudrücken habe.
+- SE01_30 = Gegen politisch motivierte Eingriffe 06: Ich finde es gut, wenn politisch darauf hingewirkt wird, bestimmte Wörter und Äußerungen aus dem öffentlichen Diskurs zu verbannen.
+
+- SE01_14 = Regelwichtigkeit 01: Beim Schreiben fällt es mir schwer, mir all die Regeln zu merken und mich daran zu halten.
+- SE01_15 = Regelwichtigkeit 02: Ich schreibe nahezu fehlerfrei.
+- SE01_16 = Regelwichtigkeit 03: Fehler in Texten springen mir sofort ins Auge.
+- SE01_17 = Regelwichtigkeit 04: Rechtschreibfehler tun mir in der Seele weh.
+- SE01_18 = Regelwichtigkeit 05: Ich habe Wichtigeres zu tun, als mich um korrekte Rechtschreibung zu kümmern.
+- SE01_19 = Regelwichtigkeit 06: Wenn ich schreibe, lege ich großen Wert auf korrekte Rechtschreibung und Grammatik.
+
+- SE01_21 = Linguistischer Relativismus 01: Wie wir sprechen, beeinflusst entscheidend, wie wir denken und die Wirklichkeit wahrnehmen.
+- SE01_22 = Linguistischer Relativismus 02: Lediglich einen neuen, schöneren Begriff für einen Beruf zu verwenden, z.B. „Raumpflegerin“ statt „Putzfrau“, ändert noch nichts am Ansehen der Berufsgruppe.
+- SE01_23 = Linguistischer Relativismus 03: Die Verhältnisse lassen sich nicht einfach dadurch verändern, dass wir anders über die Dinge sprechen.
+- SE01_24 = Linguistischer Relativismus 04: Sprache schafft Wirklichkeit.
+- SE01_27 = Linguistischer Relativismus 05: So wie gesellschaftliche Veränderungen zu Änderungen im Sprachgebrauch führen, führen Veränderungen im Sprachgebrauch ihrerseits gesellschaftliche Änderungen herbei.
+- SE01_29 = Linguistischer Relativismus 06: Negativ besetzte Wörter konsequent zu vermeiden und durch unbelastete neue Wörter zu ersetzen, hilft beim Abbau von Vorurteilen und negativen Assoziationen gegenüber den damit gemeinten Menschen.
+
+
+Eindeutig benennen, negativ gepolte Items umdrehen:
+```{r}
+ds <- ds |>
+  mutate(Sprachpessimismus_01 = SE01_01,
+         Sprachpessimismus_02 = SE01_02,
+         Sprachpessimismus_03 = SE01_03,
+         Sprachpessimismus_04 = SE01_13,
+         Sprachpessimismus_05 = SE01_25,
+         Sprachpessimismus_06 = 100 - SE01_28,
+         Gegen_Eingriffe_01 = SE01_04,
+         Gegen_Eingriffe_02 = SE01_05,
+         Gegen_Eingriffe_03 = 100 - SE01_06,
+         Gegen_Eingriffe_04 = SE01_07,
+         Gegen_Eingriffe_05 = 100 - SE01_09,
+         Gegen_Eingriffe_06 = SE01_31,
+         Gegen_pol_Eingriffe_01 = 100 - SE01_08,
+         Gegen_pol_Eingriffe_02 = SE01_10,
+         Gegen_pol_Eingriffe_03 = SE01_11,
+         Gegen_pol_Eingriffe_04 = SE01_12,
+         Gegen_pol_Eingriffe_05 = SE01_20,
+         Gegen_pol_Eingriffe_06 = 100 - SE01_30,
+         Regelwichtigkeit_01 = 100 - SE01_14,
+         Regelwichtigkeit_02 = SE01_15,
+         Regelwichtigkeit_03 = SE01_16,
+         Regelwichtigkeit_04 = SE01_17,
+         Regelwichtigkeit_05 = 100 - SE01_18,
+         Regelwichtigkeit_06 = SE01_19,
+         Ling_Relativismus_01 = SE01_21,
+         Ling_Relativismus_02 = 100 - SE01_22,
+         Ling_Relativismus_03 = 100 - SE01_23,
+         Ling_Relativismus_04 = SE01_24,
+         Ling_Relativismus_05 = SE01_27,
+         Ling_Relativismus_06 = SE01_29)
+```
+
+#### Übersicht
+```{r}
+ds |>
+    select(Sprachpessimismus_01:Ling_Relativismus_06) |>
+    report_table()
+```
+
+
+#### Regelwichtigkeit
+```{r}
+alpha_regelwichtigkeit <- ds |>
+  select(starts_with("Regelwichtigkeit_")) |>
+  alpha()
+alpha_regelwichtigkeit
+```
+
+```{r}
+omega_regelwichtigkeit <- ds |>
+  select(starts_with("Regelwichtigkeit_")) |>
+  omega(fm = "ml")
+omega_regelwichtigkeit
+```
+
+#### Sprachpessimismus
+```{r}
+alpha_sprachpessimismus <- ds |>
+  select(starts_with("Sprachpessimismus_")) |>
+  alpha()
+alpha_sprachpessimismus
+```
+
+```{r}
+omega_sprachpessimismus <- ds |>
+  select(starts_with("Sprachpessimismus_")) |>
+  omega()
+omega_sprachpessimismus
+```
+
+#### Gegen Eingriffe
+```{r}
+alpha_gegen_eingriffe <- ds |>
+  select(starts_with("Gegen_Eingriffe_")) |>
+  alpha()
+alpha_gegen_eingriffe
+```
+
+Items 03 ("Das Deutsche sollte sich nicht unbeaufsichtigt weiterentwickeln: Eine
+zentrale Autorität muss ab und an Ordnung ins Regelwerk bringen.") und 05 ("Ich
+fände es gut, wenn Rechtschreibung und Grammatik des Deutschen systematisch
+vereinfacht würden.") sind hier potentiell problematisch. Das sind genau die
+beiden Items, die ursprünglich andersherum kodiert waren -- möglicherweise gibt
+es hier also einen Akquieszenzeffekt.
+
+```{r}
+omega_gegen_eingriffe <- ds |>
+  select(starts_with("Gegen_Eingriffe_")) |>
+  omega(fm = "ml")
+omega_gegen_eingriffe
+```
+
+Ohne Item 05:
+```{r}
+ds |>
+  select(starts_with("Gegen_Eingriffe_"), -Gegen_Eingriffe_05) |>
+  alpha()
+```
+
+Ohne Items 03 und 05:
+```{r}
+ds |>
+  select(starts_with("Gegen_Eingriffe_"), -Gegen_Eingriffe_03, -Gegen_Eingriffe_05) |>
+  alpha()
+```
+
+
+#### Gegen politisch motivierte Eingriffe
+```{r}
+alpha_gegen_pol_eingriffe <- ds |>
+  select(starts_with("Gegen_pol_Eingriffe")) |>
+  alpha()
+alpha_gegen_pol_eingriffe
+```
+
+```{r}
+omega_gegen_pol_eingriffe <- ds |>
+  select(starts_with("Gegen_pol_Eingriffe")) |>
+  omega()
+omega_gegen_pol_eingriffe
+```
+
+#### Linguistischer Relativismus
+```{r}
+alpha_ling_rel <- ds |>
+  select(starts_with("Ling_Relativismus_")) |>
+  alpha()
+alpha_ling_rel
+```
+
+```{r}
+omega_ling_rel <- ds |>
+  select(starts_with("Ling_Relativismus_")) |>
+  omega()
+omega_ling_rel
+```
+
+#### Sprachkonservatismus (Gesamtmaß)
+Lässt sich ein sinnvolles Gesamtmaß aus allen Dimensionen berechnen, das
+Sprachkonservatismus (o.ä.) misst?
+
+```{r}
+ds |>
+  select(starts_with("Regelwichtigkeit_"), starts_with("Sprachpessimismus_"),
+         starts_with("Gegen_Eingriffe_"), starts_with("Gegen_pol_Eingriffe_"),
+         starts_with("Ling_Rel_")) |>
+  mutate(across(starts_with("Ling_Rel"), ~ 100 - .x)) |> # Ling_Rel hierfür umdrehen
+  alpha()
+```
+
+#### Korrelationen
+```{r, fig.width=12, fig.height=12}
+#| message: false
+ds |>
+    select(Sprachpessimismus_01:Ling_Relativismus_06) |>
+    cor() |>
+    ggcorrplot(lab = TRUE, hc.order = FALSE, lab_size = 3) +
+    labs(title = "Pearson-Korrelationen zwischen Items") +
+    scale_fill_paletteer_c("ggthemes::Orange-Blue-White Diverging", limit=c(-1, 1))
+```
+
+
+## Konfirmatorische Faktorenanalyse
+Zur Interpretation des CFI: https://openpublishing.library.umass.edu/pare/article/1584/galley/1535/view/
+```{r}
+# "1 +", um auch Intercepts/Ordinatenabschnitte zu schätzen
+# "std.lv = TRUE" fixiert Varianz der Faktoren anstelle der jeweils ersten Items
+# alternativ: summary() mit "standardized = TRUE"
+factors <- 'Sprachpessimismus =~ Sprachpessimismus_01 + Sprachpessimismus_02 + Sprachpessimismus_03 + Sprachpessimismus_04 + Sprachpessimismus_05 + Sprachpessimismus_06
+            Regelwichtigkeit =~ Regelwichtigkeit_01 + Regelwichtigkeit_02 + Regelwichtigkeit_03 + Regelwichtigkeit_04 + Regelwichtigkeit_05 + Regelwichtigkeit_06
+            Kontra_Eingriffe =~ Gegen_Eingriffe_01 + Gegen_Eingriffe_02 + Gegen_Eingriffe_03 + Gegen_Eingriffe_04 + Gegen_Eingriffe_05 + Gegen_Eingriffe_06
+            Kontra_pol_Eingriffe =~ Gegen_pol_Eingriffe_01 + Gegen_pol_Eingriffe_02 + Gegen_pol_Eingriffe_03 + Gegen_pol_Eingriffe_04 + Gegen_pol_Eingriffe_05 + Gegen_pol_Eingriffe_06
+            Ling_Relativismus =~ Ling_Relativismus_01 + Ling_Relativismus_02 + Ling_Relativismus_03 + Ling_Relativismus_04 + Ling_Relativismus_05 + Ling_Relativismus_06'
+fit <- cfa(factors, data = ds |> select(Sprachpessimismus_01:Ling_Relativismus_06), estimator = "MLM")
+
+summary(fit, fit.measures = TRUE, standardized = TRUE)
+```
+
+Ohne `Gegen_Eingriffe_03` und `Gegen_Eingriffe_05`:
+```{r}
+factors <- 'Sprachpessimismus =~ Sprachpessimismus_01 + Sprachpessimismus_02 + Sprachpessimismus_03 + Sprachpessimismus_04 + Sprachpessimismus_05 + Sprachpessimismus_06
+            Regelwichtigkeit =~ Regelwichtigkeit_01 + Regelwichtigkeit_02 + Regelwichtigkeit_03 + Regelwichtigkeit_04 + Regelwichtigkeit_05 + Regelwichtigkeit_06
+            Kontra_Eingriffe =~ Gegen_Eingriffe_01 + Gegen_Eingriffe_02 + Gegen_Eingriffe_04 + Gegen_Eingriffe_06
+            Kontra_pol_Eingriffe =~ Gegen_pol_Eingriffe_01 + Gegen_pol_Eingriffe_02 + Gegen_pol_Eingriffe_03 + Gegen_pol_Eingriffe_04 + Gegen_pol_Eingriffe_05 + Gegen_pol_Eingriffe_06
+            Ling_Relativismus =~ Ling_Relativismus_01 + Ling_Relativismus_02 + Ling_Relativismus_03 + Ling_Relativismus_04 + Ling_Relativismus_05 + Ling_Relativismus_06'
+fit <- cfa(factors, data = ds |> select(Sprachpessimismus_01:Ling_Relativismus_06), estimator = "MLM")
+
+summary(fit, fit.measures = TRUE, standardized = TRUE)
+```
+
+Mit einigen (sinnvoll ausgewählten) Items, die auf mehreren Faktoren zugleich
+laden können:
+```{r}
+factors <- 'Sprachpessimismus =~ Sprachpessimismus_01 + Sprachpessimismus_02 + Sprachpessimismus_03 + Sprachpessimismus_04 + Sprachpessimismus_05 + Sprachpessimismus_06 + Gegen_Eingriffe_02
+            Regelwichtigkeit =~ Regelwichtigkeit_01 + Regelwichtigkeit_02 + Regelwichtigkeit_03 + Regelwichtigkeit_04 + Regelwichtigkeit_05 + Regelwichtigkeit_06
+            Kontra_Eingriffe =~ Gegen_Eingriffe_01 + Gegen_Eingriffe_02 + Gegen_Eingriffe_04 + Gegen_Eingriffe_06 + Gegen_pol_Eingriffe_05
+            Kontra_pol_Eingriffe =~ Gegen_pol_Eingriffe_01 + Gegen_pol_Eingriffe_02 + Gegen_pol_Eingriffe_03 + Gegen_pol_Eingriffe_04 + Gegen_pol_Eingriffe_05 + Gegen_pol_Eingriffe_06
+            Ling_Relativismus =~ Ling_Relativismus_01 + Ling_Relativismus_02 + Ling_Relativismus_03 + Ling_Relativismus_04 + Ling_Relativismus_05 + Ling_Relativismus_06 + Gegen_pol_Eingriffe_06'
+
+fit <- cfa(factors,
+           data = ds |> select(Sprachpessimismus_01:Ling_Relativismus_06, Politische_Orientierung),
+           estimator = "MLM")
+
+summary(fit, fit.measures = TRUE, standardized = TRUE)
+```
+
+## Explorative Faktorenanalyse
+Da nicht davon auszugehen ist, dass die Faktoren unkorreliert sind, wird als
+Rotationsmethode Promax verwendet.
+
+Mit fünf Faktoren nur für die Spracheinstellungen zeigt sich, dass die
+resultierenden Faktoren relativ gut die angenommenen Dimensionen widerspiegeln.
+
+Es zeigt sich aber auch, dass mehrere Items auf verschiedenen Dimensionen
+zugleich laden, teilweise sogar höher als auf der intendierten. Ein Problem
+scheint insbesondere `Gegen_pol_Eingriffe_05` zu sein, das kaum auf Faktor 5
+(ML1), aber relativ hoch (0,47) auf Faktor 4 (ML5) lädt, was eigentlich
+`Kontra_Eingriffe` entsprechen sollte. Auf Faktor 5 (ML1) lädt dafür z.B.
+`Ling_Relativismus_02` mit -0,31, was auf Faktor 1 (`Ling_Relativismus`, ML3)
+nur mit 0,20 lädt.
+
+```{r}
+fa5 <- ds |>
+    select(Sprachpessimismus_01:Ling_Relativismus_06) |>
+    factor_analysis(n = 5, rotation = "promax", factor_method = "ml", threshold = .1) # MLE wie in factanal()
+
+fa5
+
+summary(fa5)
+
+model_performance(fa5)
+```
+
+Werte für diese Faktoren:
+```{r}
+fa5_scores <- predict(fa5) |>
+  as_tibble()
+names(fa5_scores) <- c("EFA_Ling_Relativismus",
+                       "EFA_Regelwichtigkeit",
+                       "EFA_Sprachpessimismus",
+                       "EFA_Kontra_Eingriffe",
+                       "EFA_Kontra_pol_Eingriffe")
+```
+
+
+
+Die Abgrenzung zwischen Items zum Sprachpessismus und solchen gegen Eingriffe
+sowie zwischen letzteren und solchen gegen politisch motivierte Eingriffe
+scheint besonders schwierig zu sein. Eine automatische Auswahl der Faktorenzahl
+ergibt folglich lediglich vier Faktoren:
+```{r}
+#| warning: false
+fa_auto <- ds |>
+    select(Sprachpessimismus_01:Ling_Relativismus_06) |>
+    factor_analysis(n = "auto", rotation = "promax", factor_method = "ml",
+                    threshold = .1) # MLE wie in factanal()
+
+fa_auto
+
+summary(fa_auto)
+
+model_performance(fa_auto)
+```
+
+TLI ist hier allerdings niedriger als bei der 5-Faktor-Lösung, und die Faktoren
+sind schwieriger zu interpretieren.
+
+
+## Einstellungen
+Gesamtmaß pro GGS und Gleichstellung/Gleichberechtigung, zudem
+Spracheinstellungen:
+```{r}
+ds <- ds |>
+  mutate(Pro_GGS = alpha_ggs$scores,
+         Pro_GB = alpha_ge$scores,
+         Regelwichtigkeit = alpha_regelwichtigkeit$scores,
+         Sprachpessimismus = alpha_sprachpessimismus$scores,
+         Kontra_Eingriffe = alpha_gegen_eingriffe$scores,
+         Kontra_pol_Eingriffe = alpha_gegen_pol_eingriffe$scores,
+         Ling_Relativismus = alpha_ling_rel$scores)
+```
+
+### Einstellungen zur Gleichstellung und geschlechtergerechten Sprache (GGS):
+Korrelation zwischen Einstellungen zur Gleichstellung und zur GGS:
+```{r}
+cor.test(~ Pro_GGS + Pro_GB, data = ds)
+```
+
+```{r}
+# ggs_gs_geschlecht <-
+ds |>
+  ggplot(aes(x = Pro_GB, y = Pro_GGS, colour = Geschlecht)) +
+  geom_point(alpha = .6) +
+  geom_smooth(data = ds |> filter(Geschlecht != "anderes")) +
+  labs(x = "Einstellung zur Gleichstellung",
+       y = "Einstellung zur geschlechtergerechten Sprache",
+       title = "Zusammenhang der Einstellungen",
+       subtitle = "*r* = 0,64") +
+  scale_colour_paletteer_d("colorblindr::OkabeIto") +
+  theme(title = ggtext::element_markdown())
+# ggs_gs_geschlecht
+
+# ggsave("figures/ggs_gs_geschlecht.svg", ggs_gs_geschlecht, width = 5, height = 4, device = svg)
+```
+
+
+Deutlicher Geschlechterunterschied bei der Einstellung zur geschlechtergerechten
+Sprache, deutlicher geringer bei der Einstellung zur Gleichstellung:
+```{r}
+ds |>
+  group_by(Geschlecht) |>
+  skim(Pro_GGS, Pro_GB)
+```
+
+```{r}
+ggs_geschlecht <- ds |> 
+  ggplot(aes(x = Geschlecht, y = Pro_GGS)) +
+  geom_boxplot(outlier.alpha = 0) +
+  geom_jitter(alpha = .1, width = .3, height = 0) +
+  stat_summary(fun=mean, geom="point", shape=4, size=3, color="red", fill="red") +
+  scale_y_continuous(limits = c(0, 100)) +
+  labs(y = "Einstellung zu geschlechtergerechter Sprache")
+
+gs_geschlecht <- ds |> 
+  ggplot(aes(x = Geschlecht, y = Pro_GB)) +
+  geom_boxplot(outlier.alpha = 0) +
+  geom_jitter(alpha = .1, width = .3, height = 0) +
+  stat_summary(fun=mean, geom="point", shape=4, size=3, color="red", fill="red") +
+  scale_y_continuous(limits = c(0, 100)) +
+  labs(y = "Einstellung zur Gleichstellung")
+
+ggs_gs_geschlecht_boxplot <- gs_geschlecht + ggs_geschlecht +
+  plot_annotation(title = "Einstellungen nach Geschlecht",
+                  subtitle = "Ein rotes X markiert den jeweiligen Mittelwert.")
+ggs_gs_geschlecht_boxplot
+
+# ggsave("figures/ggs_gs_geschlecht_boxplot.svg", ggs_gs_geschlecht_boxplot, width = 4, height = 4, device = svg)
+```
+
+
+
+Leichter Einfluss des Alters, allerdings nicht bei den Frauen (bei großer
+Streuung innerhalb von Kohorten):
+```{r}
+alter_geschlecht_ggs <- ds |>
+  ggplot(aes(x = Alter, y = Pro_GGS, colour = Geschlecht)) +
+  geom_point(alpha = .5) +
+  geom_smooth(method = "lm", data = ds |> filter(Geschlecht != "anderes")) +
+  scale_colour_paletteer_d("colorblindr::OkabeIto") +
+  labs(y = "Einstellung zu geschlechtergerechter Sprache",
+       title = "Alter, Geschlecht und Einstellung zu geschlechtergerechter Sprache")
+alter_geschlecht_ggs
+
+# ggsave("figures/alter_geschlecht_ggs.svg", alter_geschlecht_ggs, width = 9, height = 4, device = svg)
+```
+
+### Politische Orientierung
+Die Stichprobe ist politisch tendenziell eher links orientiert (was sich vmtl.
+gut aus einer Kombination aus Bildungsgrad und sozialer Erwünschtheit
+erklären lässt); eine auffällige Häufung gibt es zudem genau in der Mitte.
+Ausgeprägtere rechte Einstellungen finden sich eher bei Männern als bei Frauen.
+
+```{r}
+ds$Politische_Orientierung |>
+  report()
+```
+
+
+```{r}
+#| warning: false
+ds |>
+  ggplot(aes(x = Politische_Orientierung, fill = Geschlecht)) +
+  geom_histogram(bins = 20, boundary = 0, position = "identity", alpha = .5)
+```
+
+```{r}
+#| warning: false
+ds |>
+  ggplot(aes(x = Politische_Orientierung, fill = Geschlecht)) +
+  geom_density(boundary = 0, position = "identity", alpha = .5)
+```
+
+Auffällig ist, dass eine politisch rechte Einstellung zwar nahezu automatisch
+mit einer Ablehnung geschlechtergerechter Sprache einhergeht, dies im linken
+Spektrum aber nicht annähernd so eindeutig ist -- hier gibt es auch unter linken
+und sehr linken Personen viele mit ambivalenter bis ablehnender Haltung (auch
+wenn die Zustimmung im sehr linken Spektrum überwiegt).
+```{r}
+#| warning: false
+#| message: false
+ds |>
+  ggplot(aes(y = Pro_GGS, x = Politische_Orientierung, colour = Geschlecht, fill = Geschlecht)) +
+  geom_point(alpha = .5) +
+  geom_smooth(data = ds |> filter(Geschlecht != "anderes")) +
+  labs(x = "Politische Orientierung: links → rechts",
+       y = "Befürwortung geschlechtergerechter Sprache")
+```
+
+Mit anderen Worten:
+
+- Wer rechts ist, lehnt geschlechtergerechte Sprache wahrscheinlich ab.
+- Wer geschlechtergerechte Sprache klar befürwortet, ist politisch
+  wahrscheinlich auch deutlich links eingestellt.
+- Die Umkehrschlüsse sind aber nicht erlaubt: Wer sich politisch links verortet,
+  kann geschlechtergerechte Sprache auch ablehnen. Und die Ablehnung
+  geschlechtergerechter Sprache lässt kaum Rückschlüsse auf die politische
+  Einstellung zu.
+```{r}
+#| warning: false
+ds |>
+  ggplot(aes(y = Pro_GGS, x = Politische_Orientierung)) +
+  stat_density_2d(aes(fill = after_stat(density)), geom = "raster", contour = FALSE) +
+  scale_x_continuous(expand = c(0, 0)) +
+  scale_y_continuous(expand = c(0, 0)) +
+  scale_fill_continuous(type = "viridis") +
+  geom_point(alpha = .2, colour = "white") +
+  labs(x = "Politische Orientierung: links → rechts",
+       y = "Einstellung zu geschlechtergerechter Sprache",
+       fill = "Dichte")
+
+# export PDF: A6, landscape, cairo_pdf, point size = 1
+```
+
+
+### Spracheinstellungen
+```{r, fig.width=12, fig.height=12}
+#| message: false
+#| warning: false
+lowerFn <- function(data, mapping, method = "lm", ...) {
+    p <- ggplot(data = data, mapping = mapping) +
+        geom_point(alpha = .3) +
+        geom_smooth(method = method, color = "red", ...)
+    p
+}
+
+ds |>
+    select(Regelwichtigkeit, Sprachpessimismus,
+           `Kontra Eingriffe` = Kontra_Eingriffe,
+           `Kontra pol. mot. Eingriffe` = Kontra_pol_Eingriffe,
+           `Ling. Relativismus` = Ling_Relativismus,
+           `Pro Gleichstellung` = Pro_GB, `Pro GGS` = Pro_GGS,
+           `Politische Orientierung` = Politische_Orientierung) |>
+  ggpairs(lower = list(continuous = wrap(lowerFn, method = "gam")))
+```
+
+
+```{r}
+#| message: false
+#| fig-width: 7
+#| fig-height: 7
+
+options(OutDec = ",")
+
+cors <- ds |>
+  select(Regelwichtigkeit, Sprachpessimismus,
+         `Kontra Eingriffe` = Kontra_Eingriffe,
+         `Kontra pol. motiv. Eingriffe` = Kontra_pol_Eingriffe,
+         `Linguistischer Relativismus` = Ling_Relativismus,
+         `Pro Gleichstellung` = Pro_GB,
+         `Pro geschlechterger. Sprache` = Pro_GGS,
+         `Politische Orientierung` = Politische_Orientierung) |>
+  na.omit() |>
+  cor()
+
+pmat <- ds |>
+  select(Regelwichtigkeit, Sprachpessimismus,
+         `Kontra Eingriffe` = Kontra_Eingriffe,
+         `Kontra pol. motiv. Eingriffe` = Kontra_pol_Eingriffe,
+         `Linguistischer Relativismus` = Ling_Relativismus,
+         `Pro Gleichstellung` = Pro_GB,
+         `Pro geschlechterger. Sprache` = Pro_GGS,
+         `Politische Orientierung` = Politische_Orientierung) |>
+  na.omit() |>
+  cor_pmat()
+
+# Zum Hinzufügen von Signifikanzsternchen zur Graphik:
+# https://stackoverflow.com/questions/67646967/show-asterisk-for-significant-p-values-in-ggcorrplot
+# Function to get asteriks
+labs_function = function(x){
+  case_when(x >= 0.05 ~ "",
+            x < 0.05 & x >= 0.01 ~ "*",
+            x < 0.01 & x >= 0.001 ~ "**",
+            x < 0.001 ~ "***")
+}
+
+# Get asteriks matrix based on p-values
+plabs = pmat |>
+  as.data.frame() |>
+  mutate_all(labs_function)
+
+# Reshaping asterisk matrix to match ggcorrplot data output
+plabs$Var1 = as.factor(rownames(plabs))
+plabs = plabs |>
+  pivot_longer(cols = -Var1,
+               names_to = "Var2",
+               values_to = "lab")
+
+# Initial ggcorrplot
+corrplot = cors |>
+  ggcorrplot(lab = TRUE, hc.order = FALSE, type = "lower")
+
+# Subsetting asteriks matrix to only those rows within ggcorrplot data
+plabs$in_df = ifelse(is.na(match(paste0(plabs$Var1, plabs$Var2),
+                                 paste0(corrplot[["data"]]$Var1, corrplot[["data"]]$Var2))),
+                     "No", "Yes")
+
+plabs = select(filter(plabs, in_df == "Yes"), -in_df)
+
+# Add asterisks to ggcorrplot
+corrplot + 
+  geom_text(aes(x = plabs$Var1, 
+                y = plabs$Var2), 
+            label = plabs$lab, 
+            nudge_y = 0.25, 
+            size = 5) +
+  labs(title = "Pearson-Korrelationen zwischen Einstellungen", fill = "r") +
+  scale_fill_paletteer_c("ggthemes::Orange-Blue-White Diverging", limit=c(-1, 1)) + # ggthemes::Orange-Blue Diverging, Green-Blue-White Diverging
+  theme(legend.title = element_text(face = "italic", hjust = .2))
+
+options(OutDec = ".")
+# export PDF: A5, landscape, cairo_pdf
+```
+
+### Regressionsmodelle
+```{r}
+mod_pro_ggs_base <- ds |>
+  lm(Pro_GGS ~ Politische_Orientierung + Pro_GB +
+       Geschlecht + Alter, data = _)
+
+model_parameters(mod_pro_ggs_base)
+
+model_parameters(mod_pro_ggs_base, standardize = "refit")
+
+model_performance(mod_pro_ggs_base)
+```
+
+```{r}
+mod_pro_ggs_full <- ds |>
+  lm(Pro_GGS ~ Regelwichtigkeit + Sprachpessimismus + Kontra_Eingriffe +
+       Kontra_pol_Eingriffe + Ling_Relativismus + Politische_Orientierung +
+       Pro_GB + Geschlecht + Alter, data = _)
+
+model_parameters(mod_pro_ggs_full)
+
+model_parameters(mod_pro_ggs_full, standardize = "refit")
+
+model_performance(mod_pro_ggs_full)
+```
+
+```{r}
+#| warning: false
+stargazer(mod_pro_ggs_base, mod_pro_ggs_full, type = "text",
+          ci = TRUE, digits = 2,
+          star.cutoffs = c(0.05, 0.01, 0.001),
+          decimal.mark = ",",
+          digit.separator = "")
+```
+
+
+Der Vollständigkeit halber hier ein Modell mit den Faktorwerten aus der
+explorativen Faktorenanalyse weiter oben. Die (normalisierten) Ergebnisse sind
+extrem ähnlich, allerdings ist Sprachpessimismus (knapp) nicht mehr signifikant.
+(Nur die normalisierten Regressionskoeffizienten sind sinnvoll vergleichbar, da
+die Faktorwerte anders skaliert sind -- sie liegen nicht zwischen 0 und 100.)
+```{r}
+mod_pro_ggs_full_efa <- ds |>
+  bind_cols(fa5_scores) |>
+  lm(Pro_GGS ~ EFA_Regelwichtigkeit + EFA_Sprachpessimismus +
+       EFA_Kontra_Eingriffe + EFA_Kontra_pol_Eingriffe + EFA_Ling_Relativismus +
+       Politische_Orientierung +
+       Pro_GB + Geschlecht + Alter, data = _)
+
+model_parameters(mod_pro_ggs_full_efa)
+
+model_parameters(mod_pro_ggs_full_efa, standardize = "refit")
+
+model_performance(mod_pro_ggs_full_efa)
+```
+
+
+
+
+Direkter Vergleich von Basismodell und Modell mit Spracheinstellungen (basierend
+auf Item-Mittelwerten):
+```{r}
+anova(mod_pro_ggs_base, mod_pro_ggs_full)
+```
+
+
+
+Überprüfung der Annahmen deutet auf leichte Nichtlinearität hin; das scheint mir
+aber noch vertretbar, da es v.a. die Extremwerte betrifft.
+
+Die bimodale Verteilung der tatsächlich beobachteten Werte der abhängigen
+Variable kann das Modell mit seinen Vorhersagen nicht richtig erfassen.
+
+Homoskedastizität, Normalität der Residuen und geringe Kollinearität scheinen
+in zufriedenstellendem Maße gegeben zu sein.
+```{r}
+#| fig-width: 8
+#| fig-height: 8
+check_model(mod_pro_ggs_full)
+```
+
+Zehnfache Kreuzvalidierung:
+```{r}
+set.seed(42)
+performance_cv(mod_pro_ggs_full, method = "k_fold", k = 10, stack = FALSE)
+```
+
+Da die Zustimmungswerte strikt im Bereich 0 bis 100 liegen, sind solche
+Regressionsmodelle eigentlich nicht ganz angemessen -- sie gehen von einem
+unbeschränkten Wertebereich aus, weshalb auch Modellvoraussagen kleiner als 0
+oder größer als 100 möglich sind:
+```{r}
+augment(mod_pro_ggs_full) |>
+  select(.rownames, Pro_GGS, .fitted) |>
+  arrange(.fitted)
+```
+
+12 vorausgesagte Werte sind außerhalb des zulässigen Wertebereichs -- das geht
+noch.
+
+Ein angemesseneres Modell wäre Beta-Regression:
+```{r}
+mod_pro_ggs_full_beta <- ds |>
+  mutate(Pro_GGS = Pro_GGS / 100) |>
+  betareg(Pro_GGS ~ Regelwichtigkeit + Sprachpessimismus + Kontra_Eingriffe +
+       Kontra_pol_Eingriffe + Ling_Relativismus + Politische_Orientierung +
+       Pro_GB + Geschlecht + Alter, data = _)
+
+summary(mod_pro_ggs_full_beta)
+```
+Hier sind dieselben Prädiktoren signifikant, auch die *t*- und *z*-Werte sind
+jeweils nah beieinander. Allein das Alter ist nur im Beta-Regressionsmodell
+signifikant.
+
+Auch die Vorhersagen der Modelle ähneln sich extrem:
+```{r}
+both_predictions <- augment(mod_pro_ggs_full_beta) |>
+  mutate(fitted_betareg = .fitted * 100) |>
+  select(.rownames, fitted_betareg) |>
+  left_join(augment(mod_pro_ggs_full) |>
+              select(.rownames, Pro_GGS, fitted_reg = .fitted),
+            by = ".rownames") |>
+  select(.rownames, Pro_GGS, fitted_reg, fitted_betareg)
+both_predictions
+
+both_predictions |>
+  ggplot(aes(x = fitted_reg, y = fitted_betareg)) +
+  geom_point(alpha = .5)
+```
+
+Die Korrelation zwischen tatsächlichen und vorausgesagten Werten ist beim
+Beta-Regressionsmodell marginal besser:
+```{r}
+both_predictions |>
+  cor.test(~ Pro_GGS + fitted_reg, data = _)
+
+both_predictions |>
+  cor.test(~ Pro_GGS + fitted_betareg, data = _)
+```
+
+Für reguläre Regression ist $R^2$ das Quadrat dieses Korrelationskoeffizienten.
+Für die Beta-Regression lässt sich äquivalent ein Pseudo-$R^2$ berechnen:
+```{r}
+cor(both_predictions$Pro_GGS, both_predictions$fitted_betareg)^2
+```
+
+
+## Bewertungen konkreter Formen
+```{r}
+pt_stud <- ds |>
+  pivot_longer(cols = FB01_01:FB02_05,
+               names_to = c("Form", "Aspekt"),
+               names_sep = "_0",
+               values_to = "Bewertung") |>
+  mutate(Form = factor(Form,
+                       levels = c("FB02", "FB01", "FB03", "FB09"),
+                       labels = c("Studenten", "Studierende",
+                                  "Student*innen", "Student:innen")),
+         Aspekt = factor(Aspekt,
+                         labels = c("unvertraut – vertraut",
+                                    "unverständlich – verständlich",
+                                    "inakzeptabel – akzeptabel",
+                                    "nicht regelkonform – regelkonform",
+                                    "sprachlich unschön – schön")))
+
+
+pt_besuch <- ds |>
+  pivot_longer(cols = FB04_01:FB10_05,
+               names_to = c("Form", "Aspekt"),
+               names_sep = "_0",
+               values_to = "Bewertung") |>
+  mutate(Form = factor(Form,
+                       levels = c("FB04", "FB05", "FB06", "FB10"),
+                       labels = c("Besucher", "Besuchende",
+                                  "Besucher*innen", "Besucher:innen")),
+         Aspekt = factor(Aspekt,
+                         labels = c("unvertraut – vertraut",
+                                    "unverständlich – verständlich",
+                                    "inakzeptabel – akzeptabel",
+                                    "nicht regelkonform – regelkonform",
+                                    "sprachlich unschön – schön")))
+```
+
+```{r, fig.width=12, fig.height=8}
+stud_boxplot <- pt_stud |>
+  ggplot(aes(x = Form, y = Bewertung, colour = Aspekt)) +
+  geom_boxplot(outlier.alpha = .7) +
+  scale_colour_paletteer_d("colorblindr::OkabeIto")
+
+besuch_boxplot <- pt_besuch |>
+  ggplot(aes(x = Form, y = Bewertung, colour = Aspekt)) +
+  geom_boxplot(outlier.alpha = .7) +
+  scale_colour_paletteer_d("colorblindr::OkabeIto")
+
+bewertungen_formen <- stud_boxplot + besuch_boxplot +
+  plot_layout(ncol = 2, guides = "collect", axes = "collect") +
+  plot_annotation(title = "Bewertungen unterschiedlicher Formen")
+bewertungen_formen
+
+# ggsave("figures/bewertungen_formen.svg", bewertungen_formen, width = 9, height = 4, device = svg)
+```
+
+Beurteilungen, insbesondere der Akzeptabilität und sprachlichen Schönheit, und
+Einstellungen zu geschlechtergerechter Sprache hängen offenkundig zusammen:
+```{r, fig.width=12, fig.height=10}
+stud_ggs <- pt_stud |>
+  ggplot(aes(x = Pro_GGS, y = Bewertung, colour = Form)) +
+  geom_smooth(method = "lm", alpha = .1, formula = y ~ x) +
+  geom_point(alpha = .4) +
+  labs(x = "Einstellung zu geschlechtergerechter Sprache",
+       y = "Bewertung") +
+  coord_cartesian(ylim=c(0, 100)) +
+  facet_wrap(~ Aspekt) +
+  scale_colour_paletteer_d("colorblindr::OkabeIto") +
+  ggtitle("Bewertungen nach Form und Einstellung zu geschlechtergerechter Sprache")
+stud_ggs
+
+besuch_ggs <- pt_besuch |>
+  ggplot(aes(x = Pro_GGS, y = Bewertung, colour = Form)) +
+  geom_smooth(method = "lm", alpha = .1, formula = y ~ x) +
+  geom_point(alpha = .4) +
+  labs(x = "Einstellung zu geschlechtergerechter Sprache",
+       y = "Bewertung") +
+  coord_cartesian(ylim=c(0, 100)) +
+  facet_wrap(~ Aspekt) +
+  scale_colour_paletteer_d("colorblindr::OkabeIto") +
+  ggtitle("Bewertungen nach Form und Einstellung zu geschlechtergerechter Sprache")
+besuch_ggs
+
+# ggsave("figures/stud_ggs.svg", stud_ggs, width = 9, height = 4, device = svg)
+# ggsave("figures/besuch_ggs.svg", besuch_ggs, width = 9, height = 4, device = svg)
+```
+
+```{r, fig.width=12, fig.height=10}
+stud_gs <- pt_stud |>
+  ggplot(aes(x = Pro_GB, y = Bewertung, colour = Form)) +
+  geom_smooth(method = "lm", alpha = .1, formula = y ~ x) +
+  geom_point(alpha = .4) +
+  labs(x = "Einstellung zur Gleichstellung",
+       y = "Bewertung") +
+  coord_cartesian(ylim=c(0, 100)) +
+  facet_wrap(~ Aspekt) +
+  scale_colour_paletteer_d("colorblindr::OkabeIto") +
+  ggtitle("Bewertungen nach Form und Einstellung zur Gleichstellung")
+stud_gs
+
+besuch_gs <- pt_besuch |>
+  ggplot(aes(x = Pro_GB, y = Bewertung, colour = Form)) +
+  geom_smooth(method = "lm", alpha = .1, formula = y ~ x) +
+  geom_point(alpha = .4) +
+  labs(x = "Einstellung zur Gleichstellung",
+       y = "Bewertung") +
+  coord_cartesian(ylim=c(0, 100)) +
+  facet_wrap(~ Aspekt) +
+  scale_colour_paletteer_d("colorblindr::OkabeIto") +
+  ggtitle("Bewertungen nach Form und Einstellung zur Gleichstellung")
+besuch_gs
+
+# ggsave("figures/stud_gs.svg", stud_gs, width = 9, height = 4, device = svg)
+# ggsave("figures/besuch_gs.svg", besuch_gs, width = 9, height = 4, device = svg)
+```
+
+```{r}
+#| fig-width: 12
+#| fig-height: 8
+
+pt_both <- ds |>
+  pivot_longer(cols = FB01_01:FB10_05, 
+               names_to = c("Form", "Aspekt"),
+               names_sep = "_0",
+               values_to = "Bewertung") |>
+  mutate(Grundform = factor(Form,
+                            levels = c("FB02", "FB01", "FB03", "FB09",
+                                  "FB04", "FB05", "FB06", "FB10"),
+                            labels = c("Stud-", "Stud-",
+                                  "Stud-", "Stud-",
+                                  "Besuch-", "Besuch-",
+                                  "Besuch-", "Besuch-")),
+         Form = factor(Form,
+                       levels = c("FB02", "FB01", "FB03", "FB09",
+                                  "FB04", "FB05", "FB06", "FB10"),
+                       labels = c("gen. Mask.", "Partizip I",
+                                  "Asterisk", "Doppelpunkt",
+                                  "gen. Mask.", "Partizip I",
+                                  "Asterisk", "Doppelpunkt")),
+         Aspekt = factor(Aspekt,
+                         labels = c("unvertraut – vertraut",
+                                    "unverständlich – verständlich",
+                                    "inakzeptabel – akzeptabel",
+                                    "nicht regelkonform – regelkonform",
+                                    "sprachlich unschön – schön")))
+
+vertrautheit <- pt_both |>
+  filter(Aspekt == "unvertraut – vertraut") |>
+  ggplot(aes(x = Pro_GGS, y = Bewertung, colour = Form)) +
+  geom_smooth(method = "lm", alpha = .1, formula = y ~ x) +
+  geom_point(alpha = .3) +
+  labs(x = "Einstellung zu geschlechtergerechter Sprache",
+       y = "Vertrautheit") +
+  coord_cartesian(ylim=c(0, 100)) +
+  facet_wrap(~ Grundform) +
+  scale_colour_oi(order = c(1, 3, 2, 5, 4, 6, 7, 8, 9))
+
+verstaendlichkeit <- pt_both |>
+  filter(Aspekt == "unverständlich – verständlich") |>
+  ggplot(aes(x = Pro_GGS, y = Bewertung, colour = Form)) +
+  geom_smooth(method = "lm", alpha = .1, formula = y ~ x) +
+  geom_point(alpha = .3) +
+  labs(x = "Einstellung zu geschlechtergerechter Sprache",
+       y = "Verständlichkeit") +
+  coord_cartesian(ylim=c(0, 100)) +
+  facet_wrap(~ Grundform) +
+  scale_colour_oi(order = c(1, 3, 2, 5, 4, 6, 7, 8, 9))
+
+akzeptabilitaet <- pt_both |>
+  filter(Aspekt == "inakzeptabel – akzeptabel") |>
+  ggplot(aes(x = Pro_GGS, y = Bewertung, colour = Form)) +
+  geom_smooth(method = "lm", alpha = .1, formula = y ~ x) +
+  geom_point(alpha = .3) +
+  labs(x = "Einstellung zu geschlechtergerechter Sprache",
+       y = "Akzeptabilität") +
+  coord_cartesian(ylim=c(0, 100)) +
+  facet_wrap(~ Grundform) +
+  scale_colour_oi(order = c(1, 3, 2, 5, 4, 6, 7, 8, 9))
+
+regelkonformitaet <- pt_both |>
+  filter(Aspekt == "nicht regelkonform – regelkonform") |>
+  ggplot(aes(x = Pro_GGS, y = Bewertung, colour = Form)) +
+  geom_smooth(method = "lm", alpha = .1, formula = y ~ x) +
+  geom_point(alpha = .3) +
+  labs(x = "Einstellung zu geschlechtergerechter Sprache",
+       y = "Regelkonformität") +
+  coord_cartesian(ylim=c(0, 100)) +
+  facet_wrap(~ Grundform) +
+  scale_colour_oi(order = c(1, 3, 2, 5, 4, 6, 7, 8, 9))
+
+schoenheit <- pt_both |>
+  filter(Aspekt == "sprachlich unschön – schön") |>
+  ggplot(aes(x = Pro_GGS, y = Bewertung, colour = Form)) +
+  geom_smooth(method = "lm", alpha = .1, formula = y ~ x) +
+  geom_point(alpha = .3) +
+  labs(x = "Einstellung zu geschlechtergerechter Sprache",
+       y = "sprachliche Schönheit") +
+  coord_cartesian(ylim=c(0, 100)) +
+  facet_wrap(~ Grundform) +
+  scale_colour_oi(order = c(1, 3, 2, 5, 4, 6, 7, 8, 9))
+
+form_ggs <- vertrautheit + verstaendlichkeit +
+  akzeptabilitaet + regelkonformitaet + schoenheit +
+  plot_layout(ncol = 2, guides = "collect", axes = "collect")
+form_ggs
+```
+
+
+Das Alter spielte auch eine Rolle.
+
+- Vertrautheit, Verständlichkeit und Akzeptabilität des gen. Maskulinums
+  weitgehend unabhängig vom Alter
+- Einschätzung der Regelkonformität und sprachlicher Schönheit sinkt bei allen
+  Formen mit dem Alter (sprachliche Schönheit bei gen. Maskulinum weniger)
+```{r, fig.width=12, fig.height=10}
+stud_alter <- pt_stud |>
+  ggplot(aes(x = Alter, y = Bewertung, colour = Form)) +
+  geom_smooth(method = "lm", alpha = .1, formula = y ~ x) +
+  geom_point(alpha = .4) +
+  labs(y = "Bewertung") +
+  coord_cartesian(ylim=c(0, 100)) +
+  facet_wrap(~ Aspekt) +
+  scale_colour_paletteer_d("colorblindr::OkabeIto") +
+  ggtitle("Bewertungen nach Form und Alter")
+stud_alter
+
+besuch_alter <- pt_besuch |>
+  ggplot(aes(x = Alter, y = Bewertung, colour = Form)) +
+  geom_smooth(method = "lm", alpha = .1, formula = y ~ x) +
+  geom_point(alpha = .4) +
+  labs(y = "Bewertung") +
+  coord_cartesian(ylim=c(0, 100)) +
+  facet_wrap(~ Aspekt) +
+  scale_colour_paletteer_d("colorblindr::OkabeIto") +
+  ggtitle("Bewertungen nach Form und Alter")
+besuch_alter
+
+# ggsave("figures/stud_alter.svg", stud_alter, width = 9, height = 4, device = svg)
+# ggsave("figures/besuch_alter.svg", besuch_alter, width = 9, height = 4, device = svg)
+```
+
+
+### Gemischte Regression
+Wir haben es hier mit fünf unterschiedlichen abhängigen Variablen zu tun, also
+benötigen wir fünf Modelle. Da jede Person je vier Varianten von zwei Basen
+(*Stud* vs. *Besuch*) bewertet hat, liegen also pro Vp acht Bewertungen vor.
+Da diese acht Bewertungen wiederum nicht unabhängig voneinander sind, bietet es
+sich an, die Versuchspersonen (über die ID) als Zufallseffekt (*random effect*)
+ins Modell zu integrieren.
+
+Anstelle von R² werden hier zwei Maße für die Anpassungsgüte ausgegeben: das
+marginale R², das den Anteil an der Varianz angibt, der von den fixen Effekten
+aufgeklärt wird, sowie das bedingte R², das zusätzlich die Zufallseffekte
+berücksichtigt (vgl. Nakagawa und Schielzeth 2013, Nakagawa et al. 2017).
+
+Einfache gemischte Modelle sind vergleichsweise gut interpretierbar (ähnlich wie
+gewöhnliche lineare Regression). Da die Bewertungen allerdings strikt im Bereich
+0 bis 100 liegen, sind solche Modelle eigentlich nicht ganz angemessen -- sie
+gehen von einem unbeschränkten Wertebereich aus, weshalb auch Modellvoraussagen
+kleiner als 0 oder größer als 100 möglich sind.
+
+Nach den einfacher zu interpretierenden Modellen werden deshalb noch Modelle mit
+gemischter Beta-Regression erstellt, die eine bessere Anpassungsgüte erreichen.
+
+Während Beta-Regression mit `betareg()` weiter oben noch automatisch auf eine
+angepasste Verteilung ausweicht, wenn auch die Randwerte 0 und 1 (nach Division
+durch 100) in den Daten enthalten sind, ist das mit `glmmTMB()` leider nicht
+möglich -- hier muss zuerst dafür gesorgt werden, dass alle Werte im Intervall
+(0, 1) liegen. Die Dokumentation des `betareg`-Pakets schreibt dazu (siehe
+`vignette("betareg")`):
+"Furthermore, if $y$ also assumes the extremes 0 and 1, a useful transformation
+in practice is $(y * (n−1) + 0.5) / n$ where $n$ is the sample size (Smithson
+and Verkuilen 2006)."
+
+Bei beiden Varianten ist aufgrund der Interaktionsterme mit erhöhten
+Varianzinflationsfaktoren zu rechnen, was die Modelle aber nicht beeinträchtigt.
+
+#### Vertrautheit
+```{r}
+#| fig-height: 8
+mod_vertrautheit <- pt_both |>
+  filter(Aspekt == "unvertraut – vertraut") |>
+  lmer(Bewertung ~ Form * (Grundform + Pro_GGS + Geschlecht) + Alter + (1 | ID), data = _)
+
+model_parameters(mod_vertrautheit)
+
+model_parameters(mod_vertrautheit, standardize = "refit")
+
+model_performance(mod_vertrautheit)
+
+check_model(mod_vertrautheit)
+```
+
+Gemischte Beta-Regression:
+```{r}
+#| fig-height: 8
+pt_both_vertrautheit <- pt_both |>
+  filter(Aspekt == "unvertraut – vertraut") |>
+  select(Bewertung, Form, Grundform, Pro_GGS, Geschlecht, Alter, ID) |>
+  na.omit()
+
+n <- nrow(pt_both_vertrautheit)
+
+mod_vertrautheit_beta <- pt_both_vertrautheit |>
+  mutate(Bewertung = (Bewertung / 100 * (n - 1) + 0.5) / n) |> # setzt die Bewertungen auf Werte zwischen knapp über 0 und knapp unter 1
+  glmmTMB(Bewertung ~ Form * (Grundform + Pro_GGS + Geschlecht) + Alter + (1 | ID),
+          family = beta_family(), data = _)
+
+model_parameters(mod_vertrautheit_beta)
+
+model_performance(mod_vertrautheit_beta)
+
+check_model(mod_vertrautheit_beta)
+```
+
+Zur Überprüfung, ob das generische Maskulinum besser bewertet wird als andere
+Formen (ohne Einbezug sonstiger Einflussfaktoren!):
+```{r}
+mod_vertrautheit_ohne_interaktionen <- pt_both |>
+  filter(Aspekt == "unvertraut – vertraut") |>
+  lmer(Bewertung ~ Form + (1 | ID), data = _)
+
+emmeans(mod_vertrautheit_ohne_interaktionen, pairwise ~ Form, adjust = "tukey")
+```
+
+
+#### Verständlichkeit
+```{r}
+#| fig-height: 8
+mod_verstaendlichkeit <- pt_both |>
+  filter(Aspekt == "unverständlich – verständlich") |>
+  lmer(Bewertung ~ Form * (Grundform + Pro_GGS + Geschlecht) + Alter + (1 | ID), data = _)
+
+model_parameters(mod_verstaendlichkeit)
+
+model_parameters(mod_verstaendlichkeit, standardize = "refit")
+
+model_performance(mod_verstaendlichkeit)
+
+check_model(mod_verstaendlichkeit)
+```
+
+Gemischte Beta-Regression:
+```{r}
+#| fig-height: 8
+pt_both_verstaendlichkeit <- pt_both |>
+  filter(Aspekt == "unverständlich – verständlich") |>
+  select(Bewertung, Form, Grundform, Pro_GGS, Geschlecht, Alter, ID) |>
+  na.omit()
+
+n <- nrow(pt_both_verstaendlichkeit)
+
+mod_verstaendlichkeit_beta <- pt_both_verstaendlichkeit |>
+  mutate(Bewertung = (Bewertung / 100 * (n - 1) + 0.5) / n) |>
+  glmmTMB(Bewertung ~ Form * (Grundform + Pro_GGS + Geschlecht) + Alter + (1 | ID),
+          family = beta_family(), data = _)
+
+model_parameters(mod_verstaendlichkeit_beta)
+
+model_performance(mod_verstaendlichkeit_beta)
+
+check_model(mod_verstaendlichkeit_beta)
+```
+
+Zur Überprüfung, ob das generische Maskulinum besser bewertet wird als andere
+Formen (ohne Einbezug sonstiger Einflussfaktoren!):
+```{r}
+mod_verstaendlichkeit_ohne_interaktionen <- pt_both |>
+  filter(Aspekt == "unverständlich – verständlich") |>
+  lmer(Bewertung ~ Form + (1 | ID), data = _)
+
+emmeans(mod_verstaendlichkeit_ohne_interaktionen, pairwise ~ Form, adjust = "tukey")
+```
+
+#### Akzeptabilität
+```{r}
+#| fig-height: 8
+mod_akzeptabilitaet <- pt_both |>
+  filter(Aspekt == "inakzeptabel – akzeptabel") |>
+  lmer(Bewertung ~ Form * (Grundform + Pro_GGS + Geschlecht) + Alter + (1 | ID), data = _)
+
+model_parameters(mod_akzeptabilitaet)
+
+model_parameters(mod_akzeptabilitaet, standardize = "refit")
+
+model_performance(mod_akzeptabilitaet)
+
+check_model(mod_akzeptabilitaet)
+```
+
+Gemischte Beta-Regression:
+```{r}
+#| fig-height: 8
+pt_both_akzeptabilitaet <- pt_both |>
+  filter(Aspekt == "inakzeptabel – akzeptabel") |>
+  select(Bewertung, Form, Grundform, Pro_GGS, Geschlecht, Alter, ID) |>
+  na.omit()
+
+n <- nrow(pt_both_akzeptabilitaet)
+
+mod_akzeptabilitaet_beta <- pt_both_akzeptabilitaet |>
+  mutate(Bewertung = (Bewertung / 100 * (n - 1) + 0.5) / n) |>
+  glmmTMB(Bewertung ~ Form * (Grundform + Pro_GGS + Geschlecht) + Alter + (1 | ID),
+          family = beta_family(), data = _)
+
+model_parameters(mod_akzeptabilitaet_beta)
+
+model_performance(mod_akzeptabilitaet_beta)
+
+check_model(mod_akzeptabilitaet_beta)
+```
+
+Zur Überprüfung, ob das generische Maskulinum besser bewertet wird als andere
+Formen (ohne Einbezug sonstiger Einflussfaktoren!):
+```{r}
+mod_akzeptabilitaet_ohne_interaktionen <- pt_both |>
+  filter(Aspekt == "inakzeptabel – akzeptabel") |>
+  lmer(Bewertung ~ Form + (1 | ID), data = _)
+
+emmeans(mod_akzeptabilitaet_ohne_interaktionen, pairwise ~ Form, adjust = "tukey")
+```
+
+
+#### Regelkonformität
+```{r}
+#| fig-height: 8
+mod_regelkonformitaet <- pt_both |>
+  filter(Aspekt == "nicht regelkonform – regelkonform") |>
+  lmer(Bewertung ~ Form * (Grundform + Pro_GGS + Geschlecht) + Alter + (1 | ID), data = _)
+
+model_parameters(mod_regelkonformitaet)
+
+model_parameters(mod_regelkonformitaet, standardize = "refit")
+
+model_performance(mod_regelkonformitaet)
+
+check_model(mod_regelkonformitaet)
+```
+
+Gemischte Beta-Regression:
+```{r}
+#| fig-height: 8
+pt_both_regelkonformitaet <- pt_both |>
+  filter(Aspekt == "nicht regelkonform – regelkonform") |>
+  select(Bewertung, Form, Grundform, Pro_GGS, Geschlecht, Alter, ID) |>
+  na.omit()
+
+n <- nrow(pt_both_regelkonformitaet)
+
+mod_regelkonformitaet_beta <- pt_both_regelkonformitaet |>
+  mutate(Bewertung = (Bewertung / 100 * (n - 1) + 0.5) / n) |>
+  glmmTMB(Bewertung ~ Form * (Grundform + Pro_GGS + Geschlecht) + Alter + (1 | ID),
+          family = beta_family(), data = _)
+
+model_parameters(mod_regelkonformitaet_beta)
+
+model_performance(mod_regelkonformitaet_beta)
+
+check_model(mod_regelkonformitaet_beta)
+```
+
+Zur Überprüfung, ob das generische Maskulinum besser bewertet wird als andere
+Formen (ohne Einbezug sonstiger Einflussfaktoren!):
+```{r}
+mod_regelkonformitaet_ohne_interaktionen <- pt_both |>
+  filter(Aspekt == "nicht regelkonform – regelkonform") |>
+  lmer(Bewertung ~ Form + (1 | ID), data = _)
+
+emmeans(mod_regelkonformitaet_ohne_interaktionen, pairwise ~ Form, adjust = "tukey")
+```
+
+
+#### Sprachliche Schönheit
+```{r}
+#| fig-height: 8
+mod_schoenheit <- pt_both |>
+  filter(Aspekt == "sprachlich unschön – schön") |>
+  lmer(Bewertung ~ Form * (Grundform + Pro_GGS + Geschlecht) + Alter + (1 | ID), data = _)
+
+model_parameters(mod_schoenheit)
+
+model_parameters(mod_schoenheit, standardize = "refit")
+
+model_performance(mod_schoenheit)
+
+check_model(mod_schoenheit)
+```
+
+Gemischte Beta-Regression:
+```{r}
+#| fig-height: 8
+pt_both_schoenheit <- pt_both |>
+  filter(Aspekt == "sprachlich unschön – schön") |>
+  select(Bewertung, Form, Grundform, Pro_GGS, Geschlecht, Alter, ID) |>
+  na.omit()
+
+n <- nrow(pt_both_schoenheit)
+
+mod_schoenheit_beta <- pt_both_schoenheit |>
+  mutate(Bewertung = (Bewertung / 100 * (n - 1) + 0.5) / n) |>
+  glmmTMB(Bewertung ~ Form * (Grundform + Pro_GGS + Geschlecht) + Alter + (1 | ID),
+          family = beta_family(), data = _)
+
+model_parameters(mod_schoenheit_beta)
+
+model_performance(mod_schoenheit_beta)
+
+check_model(mod_schoenheit_beta)
+```
+
+Zur Überprüfung, ob das generische Maskulinum besser bewertet wird als andere
+Formen (ohne Einbezug sonstiger Einflussfaktoren!):
+```{r}
+mod_schoenheit_ohne_interaktionen <- pt_both |>
+  filter(Aspekt == "sprachlich unschön – schön") |>
+  lmer(Bewertung ~ Form + (1 | ID), data = _)
+
+emmeans(mod_schoenheit_ohne_interaktionen, pairwise ~ Form, adjust = "tukey")
+```
+
+
+#### Überblick
+```{r}
+#| warning: false
+mvt <- mod_vertrautheit
+mvs <- mod_verstaendlichkeit
+mak <- mod_akzeptabilitaet
+mrk <- mod_regelkonformitaet
+msh <- mod_schoenheit
+
+stargazer(mvt, mvs, mak, mrk, msh,
+          type = "text",
+          ci = TRUE, digits = 2,
+          star.cutoffs = c(0.05, 0.01, 0.001),
+          decimal.mark = ",",
+          digit.separator = "")
+```
+
+
+## Kommentare
+An mehreren Stellen im Fragebogen gab es freie Textfelder:
+
+- Spracheinstellungen
+- Formenbewertungen (zwei Seiten)
+- Einstellungen zur Gleichstellung
+- Einstellungen zur geschlechtergerechten Sprache
+- Feedback am Ende
+
+Alle Kommentare wurden von uns (also von zwei Annotatoren) unabhängig
+voneinander danach bewertet, wie sehr sie auf Ablehnung von oder Zustimmung zu
+geschlechtergerechter Sprache schließen lassen (Werte von -2 bis 2). Dies war
+bei 131 Vpn möglich.
+
+Anschließend wurden die Bewertungen, die nicht übereinstimmten, gemeinsam
+adjudiziert.
+
+```{r}
+ds_kommentarbewertung <- readxl::read_excel("Kommentarbewertungen.xlsx") |>
+  mutate(Kommentare_roh = str_c(ds$SE_Ergaenzungen |> replace_na(""),
+      "\n\n\n",
+      ds$FB_Ergaenzungen1 |> replace_na(""), "\n\n",
+      ds$FB_Ergaenzungen2 |> replace_na(""), "\n\n\n",
+      ds$GE_Ergaenzungen |> replace_na(""), "\n\n\n",
+      ds$GGS_Ergaenzungen |> replace_na(""), "\n\n\n",
+      ds$Feedback |> replace_na("")) |>
+    na_if("\n\n\n\n\n\n\n\n\n\n\n\n\n\n") |>
+    str_replace_all(r"(\n\n+)", "\n\n") |>
+    str_squish(), .after = Kommentare)
+ds_kommentarbewertung
+```
+
+Inter-Annotator-Agreement in Form einer polychorischen Korrelation (um die
+Übereinstimmung der Bewertungstendenz zu messen):
+```{r}
+ds_kommentarbewertung |>
+  select(Kommentarbewertung_BLB, Kommentarbewertung_AB) |>
+  na.omit() |>
+  polychoric()
+```
+
+Klassisches (gewichtetes) Cohens Kappa:
+```{r}
+ds_kommentarbewertung |>
+  select(Kommentarbewertung_BLB, Kommentarbewertung_AB) |>
+  na.omit() |>
+  irr::kappa2(weight = "squared")
+```
+
+NB: Mit `psych::cohen.kappa()` liegt das aus irgendeinem Grund etwas höher:
+```{r}
+ds_kommentarbewertung |>
+  select(Kommentarbewertung_BLB, Kommentarbewertung_AB) |>
+  na.omit() |>
+  as.data.frame() |>
+  cohen.kappa()
+```
+
+Graphisch (Punktecluster konzentrieren sich eigentlich jeweils auf demselben
+Punkt -- dann sähe man aber nicht, um wie viele Datenpunkte es sich handelt):
+```{r}
+ds_kommentarbewertung |>
+  na.omit() |>
+  ggplot(aes(x = Kommentarbewertung_AB, y = Kommentarbewertung_BLB)) +
+  geom_jitter(alpha = .2, width = .2, height = .2) +
+  geom_smooth(method = "lm", formula = "y ~ x")
+```
+
+Abweichungen liegen überwiegend darin begründet, dass ein Annotator extreme
+Bewertungen (-2 oder 2) stärker mied. In den adjudizierten Bewertungen sieht
+die Verteilung ausgewogener aus -- auch wenn hier negative und insbesondere
+stark negative Einstellungen auffällig häufig sind.
+```{r}
+ds_kommentarbewertung |>
+  na.omit() |>
+  count(Kommentarbewertung)
+```
+
+```{r}
+ds_kommentarbewertung |>
+  na.omit() |>
+  ggplot(aes(x = Kommentarbewertung)) +
+  geom_bar() +
+  labs(y = "Häufigkeit")
+```
+
+
+Generell waren diese einfacher zu bewerten als neutrale und positive
+Einstellungen, die oft mit weniger Text einhergingen.
+```{r}
+ds_kommentarbewertung |>
+  na.omit() |>
+  mutate(Länge = str_length(Kommentare_roh)) |>
+  summarise(`Median der Längen in Zeichen` = median(Länge),
+            .by = Kommentarbewertung)
+```
+
+Rang-Korrelation der adjudizierten Kommentarbewertungen mit den tatsächlich
+ermittelten Einstellungen zu geschlechtergerechter Sprache:
+```{r}
+ds_kommentarbewertung |>
+  na.omit() |>
+  left_join(ds |> select(ID, Pro_GGS), by = "ID") |>
+  select(Kommentarbewertung, Pro_GGS) |>
+  cor.test(~ Kommentarbewertung + Pro_GGS, data = _, method = "spearman")
+```
+
+
+## Versionsinformationen
+```{r}
+sessionInfo()
+```
+
